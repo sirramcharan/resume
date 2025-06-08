@@ -13,23 +13,67 @@ import json
 import asyncio
 import os
 import requests
+import ssl # Added for NLTK download certificate handling
 
-# >>> NEW: Import and load dotenv at the very top <<<
+# Load environment variables from .env file (for local development)
 from dotenv import load_dotenv
-load_dotenv() # This loads environment variables from a .env file
+load_dotenv()
 
 # Streamlit page configuration MUST be the first Streamlit command in the script
 st.set_page_config(page_title="AI Resume Optimizer", layout="centered")
 
-# --- NLTK Pre-check (No Auto-Download Here) ---
-# This section assumes NLTK data (stopwords, wordnet, punkt) has been downloaded manually
-# using `nltk.download()` in your environment. If not, the app will fail at preprocessing.
-# IMPORTANT: Before running this app locally, open a Python interpreter (e.g., in Anaconda Prompt)
-# and run:
-# import nltk
-# nltk.download('stopwords')
-# nltk.download('wordnet')
-# nltk.download('punkt')
+# --- NLTK Resource Downloader for Deployment ---
+# This function handles downloading NLTK data to a writable directory in the cloud
+# environment if it's not already present.
+# It also includes SSL context handling for certificate issues.
+def download_nltk_resources():
+    try:
+        # Create an unverified SSL context to bypass potential certificate issues during download
+        _create_unverified_https_context = ssl._create_unverified_context
+    except AttributeError:
+        # Legacy Python that doesn't have _create_unverified_context
+        pass
+    else:
+        # Handle target environment that doesn't have proper certificate verification
+        ssl._create_default_https_context = _create_unverified_https_context
+
+    # Define a path within the application's root directory for NLTK data
+    # This is often writable in cloud deployment environments
+    nltk_data_app_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'nltk_data')
+
+    # Ensure the directory exists
+    if not os.path.exists(nltk_data_app_path):
+        os.makedirs(nltk_data_app_path)
+        # st.info(f"Created NLTK data directory at: {nltk_data_app_path}") # Optional: show message
+
+    # Add this custom path to NLTK's data search paths, prioritizing it
+    if nltk_data_app_path not in nltk.data.path:
+        nltk.data.path.append(nltk_data_app_path)
+
+    required_nltk_data = ['stopwords', 'wordnet', 'punkt']
+    for data_item in required_nltk_data:
+        # Determine the correct path string for nltk.data.find
+        resource_path_str = f'corpora/{data_item}' if data_item in ['stopwords', 'wordnet'] else f'tokenizers/{data_item}'
+        try:
+            # Try to find the resource, looking in our custom path first
+            nltk.data.find(resource_path_str, paths=[nltk_data_app_path] + nltk.data.path)
+            # st.success(f"NLTK resource '{data_item}' already available.") # Optional: show message
+        except LookupError: # This specific exception means the resource was NOT FOUND
+            # Only download if genuinely not found
+            st.info(f"Downloading NLTK resource '{data_item}' for deployment...")
+            try:
+                # Perform the download, specifying the custom directory
+                nltk.download(data_item, download_dir=nltk_data_app_path)
+                st.success(f"NLTK resource '{data_item}' downloaded successfully.")
+                # st.rerun() # Avoid rerunning here to prevent loops on successful download after initial run
+            except Exception as e:
+                st.error(f"Error downloading NLTK resource '{data_item}': {e}")
+        except Exception as e: # Catch other unexpected errors from nltk.data.find
+            st.warning(f"Warning: Unexpected error while checking NLTK resource '{data_item}': {e}")
+
+# Call the NLTK downloader at the very beginning of the app
+download_nltk_resources()
+
 
 # --- Text Extraction Functions ---
 def extract_text_from_pdf(pdf_file):
@@ -144,7 +188,7 @@ async def generate_optimized_resume_text(resume_content, job_description):
     Focus on making the resume as relevant as possible, incorporating keywords naturally, using strong action verbs, and emphasizing quantifiable achievements where appropriate.
 
     **Instructions for the optimized resume content:**
-    1.  **Structure:** Use clear section headers and bullet points. Each main section (e.g., "PROFESSIONAL SUMMARY", "EXPERIENCE", "SKILLS", "EDUCATION") should start with an all-caps header without any leading symbols.
+    1.  **Structure:** Use clear section headers and bullet points. Each main section (e.g., "PROFESSIONAL SUMMARY", "EXPERIENCE", "SKILLS", "EDUCATION") should start with an all-caps header without any leading symbols or Markdown bolding.
     2.  **Sub-sections:** For roles within "EXPERIENCE" or "PROJECTS", use a format like "Job Title | Company Name | Dates" as a sub-header.
     3.  **Content:**
         * **Summary/Objective:** Provide a concise paragraph.
@@ -175,11 +219,11 @@ async def generate_optimized_resume_text(resume_content, job_description):
         ]
     }
 
-    # >>> UPDATED: Getting API key from environment variable <<<
+    # Retrieve API key from environment variables (either .env locally or Streamlit secrets)
     apiKey = os.getenv("GEMINI_API_KEY")
 
     if not apiKey:
-        st.error("Gemini API key not found. Please ensure it's set as an environment variable (e.g., in a .env file named GEMINI_API_KEY).")
+        st.error("Gemini API key not found. Please ensure it's set as an environment variable (e.g., in a .env file locally, or as a Streamlit secret on deployment, named 'GEMINI_API_KEY').")
         return "API key missing."
 
     apiUrl = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={apiKey}"
@@ -221,7 +265,7 @@ async def generate_optimized_resume_text(resume_content, job_description):
         st.error(f"Error decoding API response JSON: {e}. The API returned non-JSON or malformed data. Response text: {response.text}")
         return f"Error decoding API response: {e}"
     except Exception as e:
-        st.error(f"An unexpected error occurred during AI suggestion generation: {e}")
+        st.error(f"An unexpected error occurred during AI resume generation: {e}")
         return f"An unexpected error occurred: {e}"
 
 # --- DOCX Conversion Function ---
@@ -248,11 +292,11 @@ def convert_text_to_docx(text_content):
             continue
 
         # Check for main section headings (e.g., PROFESSIONAL SUMMARY, EXPERIENCE)
-        # Assuming the AI generates all-caps for main headings, without asterisks now.
-        if stripped_line.isupper() and len(stripped_line.split()) <= 4: # Simple heuristic for short, all-caps headings
+        # These are expected to be all caps and without asterisks based on new prompt
+        if stripped_line.isupper() and len(stripped_line.split()) <= 5 and not stripped_line.startswith(('**', '#', '-', '*')):
             document.add_heading(stripped_line, level=1)
         # Check for sub-headings like "Job Title | Company Name | Dates"
-        elif '|' in stripped_line and len(stripped_line.split('|')) >= 2:
+        elif '|' in stripped_line and stripped_line.count('|') >= 1 and not stripped_line.startswith(('*', '-')): # Ensure it's not a bullet mistakenly
             document.add_paragraph(stripped_line, style='Intense Quote') # Using 'Intense Quote' for a slightly different style for sub-headings
         # Check for bullet points (AI is prompted to use '-' or '*')
         elif stripped_line.startswith('- ') or stripped_line.startswith('* '):
@@ -279,7 +323,6 @@ async def main_app():
                 margin-bottom: 30px;
                 font-family: 'Inter', sans-serif;
             }
-            /* >>> NEW: Centered message style <<< */
             .centered-message {
                 text-align: center;
                 font-size: 1.2em;
@@ -350,9 +393,7 @@ async def main_app():
     )
 
     st.markdown('<h1 class="main-header">📄 AI Resume Optimizer 🚀</h1>', unsafe_allow_html=True)
-    # >>> UPDATED: Centered message <<<
     st.markdown("<p class='centered-message'>Upload Resume, Paste the JD and BOOM - OPTIMIZE YOUR RESUME - it works.</p>", unsafe_allow_html=True)
-
 
     # File Uploader for Resume
     st.subheader("1. Upload Your Resume")
@@ -437,4 +478,3 @@ async def main_app():
 
 if __name__ == "__main__":
     asyncio.run(main_app())
-	
