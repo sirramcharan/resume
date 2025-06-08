@@ -14,7 +14,7 @@ import asyncio
 import os
 import requests
 import ssl # Added for NLTK download certificate handling
-# Removed nltk.downloader explicit import as it's not needed with LookupError catch
+import nltk.data # Explicitly import nltk.data
 
 # Load environment variables from .env file (for local development)
 from dotenv import load_dotenv
@@ -51,31 +51,27 @@ def download_nltk_resources():
         os.makedirs(nltk_data_app_path)
         st.info(f"Created NLTK data directory at: {nltk_data_app_path}")
 
-    # Add this custom path to NLTK's data search paths, prioritizing it
-    # Use insert(0, ...) to ensure it's the very first path NLTK checks
-    if nltk_data_app_path not in nltk.data.path:
-        nltk.data.path.insert(0, nltk_data_app_path)
-        st.info(f"Added '{nltk_data_app_path}' to NLTK search paths.")
+    # CRITICAL: Clear NLTK's default search paths and add only our designated path
+    # This ensures NLTK looks exactly where we want it to in the cloud environment.
+    nltk.data.path = [nltk_data_app_path] # Overwrite default paths
 
-    required_nltk_data = ['stopwords', 'wordnet', 'punkt'] # 'punkt' includes 'punkt_tab'
+    # Set NLTK_DATA environment variable for the session (secondary measure)
+    os.environ["NLTK_DATA"] = nltk_data_app_path
+    st.info(f"Set NLTK_DATA environment variable to: {os.environ['NLTK_DATA']}")
+    st.info(f"NLTK data paths set to: {nltk.data.path}")
+
+
+    # Removed 'punkt' from required_nltk_data as we are now using regex tokenization
+    required_nltk_data = ['stopwords', 'wordnet'] 
     for data_item in required_nltk_data:
-        # Determine the correct path string for nltk.data.find
-        resource_path_str = f'corpora/{data_item}' if data_item in ['stopwords', 'wordnet'] else f'tokenizers/{data_item}'
+        st.info(f"Attempting to download/verify NLTK resource '{data_item}'...")
         try:
-            # Try to find the resource in any of the NLTK data paths
-            nltk.data.find(resource_path_str)
-            st.success(f"NLTK resource '{data_item}' already available.")
-        except LookupError: # CRITICAL FIX: Catch LookupError, which nltk.data.find raises for missing resources
-            # Only download if genuinely not found
-            st.info(f"Downloading NLTK resource '{data_item}' to {nltk_data_app_path}...")
-            try:
-                # Perform the download, specifying the custom directory, quiet=True for cleaner logs
-                nltk.download(data_item, download_dir=nltk_data_app_path, quiet=True)
-                st.success(f"NLTK resource '{data_item}' downloaded successfully.")
-            except Exception as e: # Catch any error during the actual download process
-                st.error(f"Error during NLTK download of '{data_item}': {e}")
-        except Exception as e: # Catch other general exceptions from nltk.data.find
-            st.error(f"Critical: Unexpected error while checking NLTK resource '{data_item}': {e}. This might prevent the app from functioning.")
+            # Perform the download directly. nltk.download is smart enough to skip if already present.
+            nltk.download(data_item, download_dir=nltk_data_app_path, quiet=True) 
+            st.success(f"NLTK resource '{data_item}' downloaded/verified successfully.")
+        except Exception as e: # Catch any error during the actual download process
+            st.error(f"Error during NLTK download of '{data_item}': {e}. This resource is critical for NLP processing.")
+            # If download fails, the app might not function correctly.
     
     st.write("NLTK resource check and download complete.")
     # Return a dummy value to indicate completion for st.cache_resource
@@ -118,14 +114,13 @@ def extract_text_from_docx(docx_file):
 def preprocess_text(text):
     """
     Cleans and preprocesses text for analysis.
-    Steps: lowercase, remove non-alphanumeric, tokenize, remove stopwords, lemmatize.
+    Steps: lowercase, remove non-alphanumeric, tokenize (using regex), remove stopwords, lemmatize.
     """
     if not text:
         return ""
     text = text.lower()
-    # Remove punctuation and special characters, keep spaces
-    text = re.sub(r'[^a-z0-9\s]', '', text)
-    tokens = nltk.word_tokenize(text) # This is where 'punkt' is used
+    # Removed nltk.word_tokenize and replaced with regex for robustness in deployment
+    tokens = re.findall(r'\b\w+\b', text) # Use regex for word tokenization
     stop_words = set(stopwords.words('english')) # This is where 'stopwords' is used
     tokens = [word for word in tokens if word not in stop_words]
     lemmatizer = WordNetLemmatizer() # This is where 'wordnet' is used
@@ -257,7 +252,7 @@ async def generate_optimized_resume_text(resume_content, job_description):
            result['candidates'][0].get('content') and result['candidates'][0]['content'].get('parts') and \
            len(result['candidates'][0]['content']['parts']) > 0:
             st.success("Optimized resume text generated!")
-            return result['candidates'][0]['content']['parts'][0]['text']
+            return result['candidates'][0]['content']['parts'][0].get('text', '') # Ensure text is retrieved or empty string
         else:
             st.error("Could not generate optimized resume text. The AI response was empty or malformed.")
             st.json(result) # Display the raw result for debugging
