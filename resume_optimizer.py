@@ -14,6 +14,7 @@ import asyncio
 import os
 import requests
 import ssl # Added for NLTK download certificate handling
+import nltk.downloader # Explicitly import downloader
 
 # Load environment variables from .env file (for local development)
 from dotenv import load_dotenv
@@ -26,7 +27,11 @@ st.set_page_config(page_title="AI Resume Optimizer", layout="centered")
 # This function handles downloading NLTK data to a writable directory in the cloud
 # environment if it's not already present.
 # It also includes SSL context handling for certificate issues.
+# Use st.cache_resource to ensure this function runs only once per deployment
+@st.cache_resource
 def download_nltk_resources():
+    st.write("Initializing NLTK resource check and download...")
+
     try:
         # Create an unverified SSL context to bypass potential certificate issues during download
         _create_unverified_https_context = ssl._create_unverified_context
@@ -44,32 +49,38 @@ def download_nltk_resources():
     # Ensure the directory exists
     if not os.path.exists(nltk_data_app_path):
         os.makedirs(nltk_data_app_path)
-        # st.info(f"Created NLTK data directory at: {nltk_data_app_path}") # Optional: show message
+        st.info(f"Created NLTK data directory at: {nltk_data_app_path}")
 
     # Add this custom path to NLTK's data search paths, prioritizing it
+    # Use insert(0, ...) to ensure it's the very first path NLTK checks
     if nltk_data_app_path not in nltk.data.path:
-        nltk.data.path.append(nltk_data_app_path)
+        nltk.data.path.insert(0, nltk_data_app_path)
+        st.info(f"Added '{nltk_data_app_path}' to NLTK search paths.")
 
-    required_nltk_data = ['stopwords', 'wordnet', 'punkt']
+    required_nltk_data = ['stopwords', 'wordnet', 'punkt'] # 'punkt' includes 'punkt_tab'
     for data_item in required_nltk_data:
         # Determine the correct path string for nltk.data.find
+        # For 'punkt', NLTK internally uses 'tokenizers/punkt', which then uses 'punkt_tab'
         resource_path_str = f'corpora/{data_item}' if data_item in ['stopwords', 'wordnet'] else f'tokenizers/{data_item}'
         try:
-            # Try to find the resource, looking in our custom path first
-            nltk.data.find(resource_path_str, paths=[nltk_data_app_path] + nltk.data.path)
-            # st.success(f"NLTK resource '{data_item}' already available.") # Optional: show message
-        except LookupError: # This specific exception means the resource was NOT FOUND
+            # Try to find the resource in any of the NLTK data paths
+            nltk.data.find(resource_path_str)
+            st.success(f"NLTK resource '{data_item}' already available.")
+        except nltk.downloader.DownloadError: # Catch specific NLTK download error
             # Only download if genuinely not found
-            st.info(f"Downloading NLTK resource '{data_item}' for deployment...")
+            st.info(f"Downloading NLTK resource '{data_item}' to {nltk_data_app_path}...")
             try:
                 # Perform the download, specifying the custom directory
-                nltk.download(data_item, download_dir=nltk_data_app_path)
+                nltk.download(data_item, download_dir=nltk_data_app_path, quiet=False) # quiet=False for more verbose output during download
                 st.success(f"NLTK resource '{data_item}' downloaded successfully.")
-                # st.rerun() # Avoid rerunning here to prevent loops on successful download after initial run
             except Exception as e:
                 st.error(f"Error downloading NLTK resource '{data_item}': {e}")
-        except Exception as e: # Catch other unexpected errors from nltk.data.find
-            st.warning(f"Warning: Unexpected error while checking NLTK resource '{data_item}': {e}")
+        except Exception as e: # Catch other unexpected errors from nltk.data.find (e.g., permissions)
+            st.error(f"Critical: Unexpected error while checking NLTK resource '{data_item}': {e}. This might prevent the app from functioning.")
+    
+    st.write("NLTK resource check and download complete.")
+    # Return a dummy value to indicate completion for st.cache_resource
+    return True
 
 # Call the NLTK downloader at the very beginning of the app
 download_nltk_resources()
@@ -115,10 +126,10 @@ def preprocess_text(text):
     text = text.lower()
     # Remove punctuation and special characters, keep spaces
     text = re.sub(r'[^a-z0-9\s]', '', text)
-    tokens = nltk.word_tokenize(text)
-    stop_words = set(stopwords.words('english'))
+    tokens = nltk.word_tokenize(text) # This is where 'punkt' is used
+    stop_words = set(stopwords.words('english')) # This is where 'stopwords' is used
     tokens = [word for word in tokens if word not in stop_words]
-    lemmatizer = WordNetLemmatizer()
+    lemmatizer = WordNetLemmatizer() # This is where 'wordnet' is used
     tokens = [lemmatizer.lemmatize(word) for word in tokens]
     return ' '.join(tokens)
 
