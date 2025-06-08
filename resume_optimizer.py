@@ -14,7 +14,7 @@ import asyncio
 import os
 import requests
 import ssl # Added for NLTK download certificate handling
-import nltk.downloader # Explicitly import downloader
+# Removed nltk.downloader explicit import as it's not needed with LookupError catch
 
 # Load environment variables from .env file (for local development)
 from dotenv import load_dotenv
@@ -60,22 +60,21 @@ def download_nltk_resources():
     required_nltk_data = ['stopwords', 'wordnet', 'punkt'] # 'punkt' includes 'punkt_tab'
     for data_item in required_nltk_data:
         # Determine the correct path string for nltk.data.find
-        # For 'punkt', NLTK internally uses 'tokenizers/punkt', which then uses 'punkt_tab'
         resource_path_str = f'corpora/{data_item}' if data_item in ['stopwords', 'wordnet'] else f'tokenizers/{data_item}'
         try:
             # Try to find the resource in any of the NLTK data paths
             nltk.data.find(resource_path_str)
             st.success(f"NLTK resource '{data_item}' already available.")
-        except nltk.downloader.DownloadError: # Catch specific NLTK download error
+        except LookupError: # CRITICAL FIX: Catch LookupError, which nltk.data.find raises for missing resources
             # Only download if genuinely not found
             st.info(f"Downloading NLTK resource '{data_item}' to {nltk_data_app_path}...")
             try:
-                # Perform the download, specifying the custom directory
-                nltk.download(data_item, download_dir=nltk_data_app_path, quiet=False) # quiet=False for more verbose output during download
+                # Perform the download, specifying the custom directory, quiet=True for cleaner logs
+                nltk.download(data_item, download_dir=nltk_data_app_path, quiet=True)
                 st.success(f"NLTK resource '{data_item}' downloaded successfully.")
-            except Exception as e:
-                st.error(f"Error downloading NLTK resource '{data_item}': {e}")
-        except Exception as e: # Catch other unexpected errors from nltk.data.find (e.g., permissions)
+            except Exception as e: # Catch any error during the actual download process
+                st.error(f"Error during NLTK download of '{data_item}': {e}")
+        except Exception as e: # Catch other general exceptions from nltk.data.find
             st.error(f"Critical: Unexpected error while checking NLTK resource '{data_item}': {e}. This might prevent the app from functioning.")
     
     st.write("NLTK resource check and download complete.")
